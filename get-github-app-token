@@ -1,0 +1,12 @@
+#!/bin/bash
+
+app_id=5
+private_key_file=/workspaces/packsmoke/hello.2023-06-08.private-key.pem
+
+owner=$1
+
+JWT=$(ruby tiny-get-jwt.rb "$private_key_file" $app_id)
+
+installation_id=$(curl --silent --fail -X GET -H "Authorization: Bearer ${JWT}" -H "Accept: application/vnd.github.machine-man-preview+json" http://api.github.localhost/app/installations | jq '.[] | select(.account.login=="'"$owner"'").id')
+
+curl --silent --fail -X POST -H "Authorization: Bearer ${JWT}" -H "Accept: application/vnd.github.machine-man-preview+json" http://api.github.localhost/app/installations/${installation_id}/access_tokens | jq -r '.token'

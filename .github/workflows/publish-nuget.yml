@@ -1,0 +1,99 @@
+name: publish nuget
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      token_type:
+        description: 'Token type'
+        default: 'secrets.GITHUB_TOKEN'
+        type: choice
+        options:
+          - secrets.GITHUB_TOKEN
+          - PAT
+          - GitHub App
+      package_name:
+        description: 'Package name, REPO is a macro'
+        default: REPO-1
+        type: string
+      version:
+        description: 'Version number for package. RUN is a macro for github.run_number'
+        default: '1.0.0'
+        type: string
+
+env:
+  DOTNET_NOLOGO: true
+
+jobs:
+  publish-nuget:
+    runs-on: ubuntu-latest
+
+    permissions:
+      packages: write
+      contents: read
+
+    steps:
+      - name: Clean
+        run: rm -fr * .* || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set environment vars based on workflow inputs
+        run: |
+          token_type="${{ github.event.client_payload.token_type }}"
+          if [ -z "$token_type" ]; then token_type="${{ inputs.token_type }}"; fi
+          package_name="${{ github.event.client_payload.package_name }}"
+          if [ -z "$package_name" ]; then package_name="${{ inputs.package_name }}"; fi
+          version="${{ github.event.client_payload.version }}"
+          if [ -z "$version" ]; then version="${{ inputs.version }}"; fi
+
+          echo "token_type: $token_type"
+          echo "package_name: $package_name"
+          echo "version: $version"
+          if [[ "$token_type" == "PAT" ]]; then
+            echo "Setting env.TOKEN = secrets.PAT"
+            echo "TOKEN=${{ secrets.PAT }}" >> $GITHUB_ENV
+          elif [[ "$token_type" == "GitHub App" ]]; then
+            echo "Setting env.TOKEN = GitHub App"
+            echo "TOKEN=$(./get-github-app-token ${{ github.repository_owner }})" >> $GITHUB_ENV
+          else
+            echo "Setting env.TOKEN = secrets.GITHUB_TOKEN"
+            echo "TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+          fi
+          cat config | while read line; do if [[ ${line:0:1} != "#" ]]; then echo "$line" >> $GITHUB_ENV; fi; done
+          echo "TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%S.%3N)" >> $GITHUB_ENV
+
+          expanded_package_name=$(sed 's/REPO/${{ github.event.repository.name }}/' <<< "$package_name")
+          echo "PACKAGE_NAME=$expanded_package_name" >> $GITHUB_ENV
+
+          expanded_version=$(sed 's/RUN/${{ github.run_number }}/' <<< "$version")
+          echo "VERSION=$expanded_version" >> $GITHUB_ENV
+
+      - name: Output environment variables, etc.
+        run: |
+          echo "github.repository_owner: ${{ github.repository_owner }}"
+          echo "github.repository: ${{ github.repository}}"
+          echo "github.event.repository.name: ${{ github.event.repository.name}}"
+          echo "TIMESTAMP: ${{ env.TIMESTAMP}}"
+          echo "PACKAGE_NAME: ${{ env.PACKAGE_NAME }}"
+          echo "VERSION: ${{ env.VERSION }}"
+          echo "TOKEN: ${{ env.TOKEN }}"
+          echo "NUGET_REGISTRY_URL: ${{ env.NUGET_REGISTRY_URL }}"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 3.1.x
+
+      - name: Create a .NET Core class library project
+        run: dotnet new classlib --name ${{ env.PACKAGE_NAME }} --output . # if you supply --name it will create a new directory, so use --output . to bring it back to CWD
+        
+      - name: Add NuGetPublish.cs
+        run: echo 'public class NuGetPublish { public static void SayHello() { System.Console.WriteLine("Hello from ${{ github.repository }}! Package [${{ github.repository_owner }}/${{ env.PACKAGE_NAME }}] Version ${{ env.VERSION }} Created at ${{ env.TIMESTAMP }}"); } }' > NuGetPublish.cs
+
+      - name: Build package
+        # run: dotnet pack -p:RepositoryUrl=${{ github.server_url }}/${{ github.repository }} -p:PackageVersion=${{ env.VERSION }} --output .  # -p:RepositoryUrl isn't necessary to link when you use GITHUB_TOKEN so I think we can omit it for testing purposes
+        run: dotnet pack -p:PackageVersion=${{ env.VERSION }} --output .
+
+      - name: Publish package
+        run: dotnet nuget push *.nupkg --api-key ${{ env.TOKEN }} --source ${{ env.NUGET_REGISTRY_URL }}/${{ github.repository_owner }}/index.json

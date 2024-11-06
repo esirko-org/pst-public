@@ -1,0 +1,36 @@
+# Codespaces
+NPM_REGISTRY_URL=http://npm.pkg.github.localhost:8004
+NUGET_REGISTRY_URL=http://nuget.pkg.github.localhost:3005
+RUBYGEMS_REGISTRY_URL=http://rubygems.pkg.github.localhost:3005
+MAVEN_REGISTRY_URL=http://maven.pkg.github.localhost:3005
+CONTAINER_REGISTRY_URL=http://github.localhost:8001
+
+# dotcom
+#NPM_REGISTRY_URL=https://npm.pkg.github.com
+#NUGET_REGISTRY_URL=https://nuget.pkg.github.com
+#RUBYGEMS_REGISTRY_URL=https://rubygems.pkg.github.com
+#MAVEN_REGISTRY_URL=https://maven.pkg.github.com
+#CONTAINER_REGISTRY_URL=https://ghcr.io
+
+# Proxima (e.g., test-prodae01)
+#NPM_REGISTRY_URL=https://npm.test-prodae01.ghe.com
+#NUGET_REGISTRY_URL=https://nuget.test-prodae01.ghe.com
+#RUBYGEMS_REGISTRY_URL=https://rubygems.test-prodae01.ghe.com
+#MAVEN_REGISTRY_URL=https://maven.test-prodae01.ghe.com
+#CONTAINER_REGISTRY_URL=https://containers.test-prodae01.ghe.com
+
+# GHES - no subdomain isolation
+# TODO: Set these URLs to template URLs
+#NPM_REGISTRY_URL=
+#NUGET_REGISTRY_URL=
+#RUBYGEMS_REGISTRY_URL=
+#MAVEN_REGISTRY_URL=
+#CONTAINER_REGISTRY_URL=xxxxxxxxxxx
+
+# GHES - subdomain isolation
+# TODO: Set these URLs to template URLs
+#NPM_REGISTRY_URL=
+#NUGET_REGISTRY_URL=
+#RUBYGEMS_REGISTRY_URL=
+#MAVEN_REGISTRY_URL=
+#CONTAINER_REGISTRY_URL=

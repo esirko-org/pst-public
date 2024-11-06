@@ -1,0 +1,113 @@
+name: consume rubygems
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      token_type:
+        description: 'Token type'
+        default: 'secrets.GITHUB_TOKEN'
+        type: choice
+        options:
+          - secrets.GITHUB_TOKEN
+          - PAT
+          - GitHub App
+      package_nwo:
+        description: 'Package to consume (name with owner)'
+        type: string
+      version:
+        description: 'Version to consume (optional) [TODO: not yet implemented]'
+        default: ''
+        type: string
+
+jobs:
+  install-ruby:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clean
+        run: rm -fr * .* || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup Ruby 3.2.2
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.2.2
+
+      - name: Set environment vars based on workflow inputs
+        run: |
+          token_type="${{ github.event.client_payload.token_type }}"
+          if [ -z "$token_type" ]; then token_type="${{ inputs.token_type }}"; fi
+          package_nwo="${{ github.event.client_payload.package_nwo }}"
+          if [ -z "$package_nwo" ]; then package_nwo="${{ inputs.package_nwo }}"; fi
+          version="${{ github.event.client_payload.version }}"
+          if [ -z "$version" ]; then version="${{ inputs.version }}"; fi
+          package_owner="${package_nwo%%/*}"
+          package_name="${package_nwo#*/}"
+          echo "token_type: $token_type"
+          echo "package_owner: $package_owner"
+          echo "package_name: $package_name"
+          echo "version: $version"
+          if [[ "$token_type" == "PAT" ]]; then
+            echo "Setting env.TOKEN = secrets.PAT"
+            echo "TOKEN=${{ secrets.PAT }}" >> $GITHUB_ENV
+          elif [[ "$token_type" == "GitHub App" ]]; then
+            echo "Setting env.TOKEN = GitHub App"
+            echo "TOKEN=$(./get-github-app-token ${{ github.repository_owner }})" >> $GITHUB_ENV
+          else
+            echo "Setting env.TOKEN = secrets.GITHUB_TOKEN"
+            echo "TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+          fi
+          hostname=$(echo "${{ github.server_url }}" | sed -E 's/^\s*.*:\/\///g') # Strip out "https://"
+          cat config | while read line; do if [[ ${line:0:1} != "#" ]]; then echo "$line" >> $GITHUB_ENV; fi; done
+          echo "HOSTNAME=$hostname" >> $GITHUB_ENV
+          echo "TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%S.%3N)" >> $GITHUB_ENV
+          echo "PACKAGE_OWNER=$package_owner" >> $GITHUB_ENV
+          echo "PACKAGE_NAME=$package_name" >> $GITHUB_ENV
+          echo "PACKAGE_VERSION=$version" >> $GITHUB_ENV
+
+      - name: Output environment variables, etc.
+        run: |
+          echo "github.repository_owner: ${{ github.repository_owner }}"
+          echo "github.repository: ${{ github.repository}}"
+          echo "github.event.repository.name: ${{ github.event.repository.name}}"
+          echo "TIMESTAMP: ${{ env.TIMESTAMP}}"
+          echo "PACKAGE_OWNER: ${{ env.PACKAGE_OWNER }}"
+          echo "PACKAGE_NAME: ${{ env.PACKAGE_NAME }}"
+          echo "PACKAGE_VERSION: ${{ env.PACKAGE_VERSION }}"
+          echo "TOKEN: ${{ env.TOKEN }}"
+          echo "RUBYGEMS_REGISTRY_URL: ${{ env.RUBYGEMS_REGISTRY_URL }}"
+
+          rubygems_registry_url_protocol=$(echo $RUBYGEMS_REGISTRY_URL | sed -E 's/:\/\/.*//g')
+          echo "RUBYGEMS_REGISTRY_URL_PROTOCOL=$rubygems_registry_url_protocol" >> $GITHUB_ENV
+          rubygems_registry_url_without_protocol=$(echo ${{ env.RUBYGEMS_REGISTRY_URL }} | sed -E 's/^\s*.*:\/\///g')
+          echo "RUBYGEMS_REGISTRY_URL_WITHOUT_PROTOCOL=$rubygems_registry_url_without_protocol" >> $GITHUB_ENV
+          echo "RUBYGEMS_REGISTRY_URL_WITHOUT_PROTOCOL: $rubygems_registry_url_without_protocol"
+
+          echo "HOSTNAME: ${{ env.HOSTNAME }}"
+          
+      - name: Setup auth
+        run: |
+           echo "${{ env.RUBYGEMS_REGISTRY_URL_PROTOCOL }}://${{ env.TOKEN }}@${{ env.RUBYGEMS_REGISTRY_URL_WITHOUT_PROTOCOL }}/${{ env.PACKAGE_OWNER }}/"
+           gem sources --add "${{ env.RUBYGEMS_REGISTRY_URL_PROTOCOL }}://${{ env.TOKEN }}@${{ env.RUBYGEMS_REGISTRY_URL_WITHOUT_PROTOCOL }}/${{ env.PACKAGE_OWNER }}/"
+                
+      - name: Create hello world script 
+        run: |
+          cat > hello.rb << EOM
+          require '${{ env.PACKAGE_NAME }}'
+          RubyGemsPublish.hello
+          EOM
+          
+      - name: Install
+        run: |
+          gem install "${{ env.PACKAGE_NAME }}" # TODO: if version is specified, do `--version ${{ env.PACKAGE_VERSION }}`
+          
+      - name: Run script
+        run : |
+          ruby hello.rb
+     
+      - name: Clean up
+        run : |
+          gem uninstall "${{ env.PACKAGE_NAME }}" -a

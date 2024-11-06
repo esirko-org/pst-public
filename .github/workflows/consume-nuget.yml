@@ -1,0 +1,99 @@
+name: consume nuget
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      token_type:
+        description: 'Token type'
+        default: 'secrets.GITHUB_TOKEN'
+        type: choice
+        options:
+          - secrets.GITHUB_TOKEN
+          - PAT
+          - GitHub App
+      package_nwo:
+        description: 'Package to consume (name with owner)'
+        type: string
+      version:
+        description: 'Version to consume'
+        default: '1.0.0'
+        type: string
+
+env:
+  DOTNET_NOLOGO: true
+
+jobs:
+  install-nuget:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clean
+        run: rm -fr * .* || true
+
+      - uses: actions/checkout@v4
+
+      - name: Set environment vars based on workflow inputs
+        run: |
+          token_type="${{ github.event.client_payload.token_type }}"
+          if [ -z "$token_type" ]; then token_type="${{ inputs.token_type }}"; fi
+          package_nwo="${{ github.event.client_payload.package_nwo }}"
+          if [ -z "$package_nwo" ]; then package_nwo="${{ inputs.package_nwo }}"; fi
+          version="${{ github.event.client_payload.version }}"
+          if [ -z "$version" ]; then version="${{ inputs.version }}"; fi
+
+          package_owner="${package_nwo%%/*}"
+          package_name="${package_nwo#*/}"
+          echo "token_type: $token_type"
+          echo "package_owner: $package_owner"
+          echo "package_name: $package_name"
+          echo "version: $version"
+          if [[ "$token_type" == "PAT" ]]; then
+            echo "Setting env.TOKEN = secrets.PAT"
+            echo "TOKEN=${{ secrets.PAT }}" >> $GITHUB_ENV
+          elif [[ "$token_type" == "GitHub App" ]]; then
+            echo "Setting env.TOKEN = GitHub App"
+            echo "TOKEN=$(./get-github-app-token ${{ github.repository_owner }})" >> $GITHUB_ENV
+          else
+            echo "Setting env.TOKEN = secrets.GITHUB_TOKEN"
+            echo "TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+          fi
+          cat config | while read line; do if [[ ${line:0:1} != "#" ]]; then echo "$line" >> $GITHUB_ENV; fi; done
+          echo "TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%S.%3N)" >> $GITHUB_ENV
+          echo "PACKAGE_OWNER=$package_owner" >> $GITHUB_ENV
+          echo "PACKAGE_NAME=$package_name" >> $GITHUB_ENV
+          echo "PACKAGE_VERSION=$version" >> $GITHUB_ENV
+
+      - name: Output environment variables, etc.
+        run: |
+          echo "github.repository_owner: ${{ github.repository_owner }}"
+          echo "github.repository: ${{ github.repository}}"
+          echo "github.event.repository.name: ${{ github.event.repository.name}}"
+          echo "TIMESTAMP: ${{ env.TIMESTAMP}}"
+          echo "PACKAGE_OWNER: ${{ env.PACKAGE_OWNER }}"
+          echo "PACKAGE_NAME: ${{ env.PACKAGE_NAME }}"
+          echo "PACKAGE_VERSION: ${{ env.PACKAGE_VERSION }}"
+          echo "TOKEN: ${{ env.TOKEN }}"
+          echo "NUGET_REGISTRY_URL: ${{ env.NUGET_REGISTRY_URL }}"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 3.1.x
+          source-url: ${{ env.NUGET_REGISTRY_URL }}/${{ env.PACKAGE_OWNER }}/index.json
+        env:
+          NUGET_AUTH_TOKEN: ${{ env.TOKEN }}
+
+      - name: clean nuget
+        run: dotnet nuget locals all -c
+        
+      - name: Create a .NET Core console project
+        run: dotnet new console --name consumer --force
+
+      - name: Add Program.cs
+        run: echo 'class Program { static void Main() { NuGetPublish.SayHello(); } }' > Program.cs
+
+      - name: Install nuget-publish package
+        run: dotnet add consumer package ${{ env.PACKAGE_NAME }} --version ${{ env.PACKAGE_VERSION }}
+
+      - name: Run the project
+        run: dotnet run --project consumer

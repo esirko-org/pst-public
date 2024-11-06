@@ -1,0 +1,192 @@
+name: consume maven
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      token_type:
+        description: 'Token type'
+        default: 'secrets.GITHUB_TOKEN'
+        type: choice
+        options:
+          - secrets.GITHUB_TOKEN
+          - PAT
+          - GitHub App
+      package_groupid:
+        description: 'Group ID of package to consume'
+        default: com.octokat.app
+        type: string
+      package_name:
+        description: 'Package to consume (just the name, no owner)'
+        type: string
+      version:
+        description: 'Version to consume'
+        default: '1.0.0-SNAPSHOT'
+        type: string
+        
+env:
+  CONSUMER_GROUP_ID: com.octokat-consumer.app
+  CONSUMER_ARTIFACT_ID: install-octokat-app
+  CONSUMER_VERSION: 3.14-SNAPSHOT
+  CONSUMER_CLASS_NAME: InstallApp
+  CONSUMEE_CLASS_NAME: PublishApp
+  SETTINGS_FILE: settings.xml
+
+jobs:
+  install-maven:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clean
+        run: |
+          rm -fr * .* || true
+
+      - uses: actions/checkout@v4
+
+      - name: Set environment vars based on workflow inputs
+        run: |
+          token_type="${{ github.event.client_payload.token_type }}"
+          if [ -z "$token_type" ]; then token_type="${{ inputs.token_type }}"; fi
+          package_groupid="${{ github.event.client_payload.package_groupid }}"
+          if [ -z "$package_groupid" ]; then package_groupid="${{ inputs.package_groupid }}"; fi
+          package_name="${{ github.event.client_payload.package_name }}"
+          if [ -z "$package_name" ]; then package_name="${{ inputs.package_name }}"; fi
+          version="${{ github.event.client_payload.version }}"
+          if [ -z "$version" ]; then version="${{ inputs.version }}"; fi
+          echo "token_type: $token_type"
+          echo "package_groupid: $package_groupid"
+          echo "package_name: $package_name"
+          echo "version: ${{ inputs.version }}"
+          if [[ "$token_type" == "PAT" ]]; then
+            echo "Setting env.TOKEN = secrets.PAT"
+            echo "TOKEN=${{ secrets.PAT }}" >> $GITHUB_ENV
+          elif [[ "$token_type" == "GitHub App" ]]; then
+            echo "Setting env.TOKEN = GitHub App"
+            echo "TOKEN=$(./get-github-app-token ${{ github.repository_owner }})" >> $GITHUB_ENV
+          else
+            echo "Setting env.TOKEN = secrets.GITHUB_TOKEN"
+            echo "TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+          fi
+          cat config | while read line; do if [[ ${line:0:1} != "#" ]]; then echo "$line" >> $GITHUB_ENV; fi; done
+          echo "TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%S.%3N)" >> $GITHUB_ENV
+          echo "PACKAGE_GROUP_ID=$package_groupid" >> $GITHUB_ENV
+          echo "PACKAGE_NAME=$package_name" >> $GITHUB_ENV
+          echo "PACKAGE_VERSION=${{ inputs.version }}" >> $GITHUB_ENV
+
+      - name: Output environment variables, etc.
+        run: |
+          echo "github.repository_owner: ${{ github.repository_owner }}"
+          echo "github.repository: ${{ github.repository}}"
+          echo "github.event.repository.name: ${{ github.event.repository.name}}"
+          echo "TIMESTAMP: ${{ env.TIMESTAMP}}"
+          echo "PACKAGE_GROUP_ID: ${{ env.PACKAGE_GROUP_ID }}"
+          echo "PACKAGE_NAME: ${{ env.PACKAGE_NAME }}"
+          echo "PACKAGE_VERSION: ${{ env.PACKAGE_VERSION }}"
+          echo "TOKEN: ${{ env.TOKEN }}"
+          echo "MAVEN_REGISTRY_URL: ${{ env.MAVEN_REGISTRY_URL }}"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: oracle
+  
+      - name: Add settings.xml
+        run: |
+          echo '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
+                                http://maven.apache.org/xsd/settings-1.0.0.xsd">
+            <activeProfiles>
+              <activeProfile>github</activeProfile>
+            </activeProfiles>
+            <profiles>
+              <profile>
+                <id>github</id>
+                <repositories>
+                  <repository>
+                    <id>github</id>
+                    <url>${{ env.MAVEN_REGISTRY_URL }}/${{ github.repository }}</url>
+                    <releases>
+                      <enabled>false</enabled>
+                      <updatePolicy>always</updatePolicy>
+                      <checksumPolicy>warn</checksumPolicy>
+                    </releases>
+                    <snapshots>
+                      <enabled>true</enabled>
+                      <updatePolicy>always</updatePolicy>
+                      <checksumPolicy>fail</checksumPolicy>
+                    </snapshots>
+                  </repository>
+                </repositories>
+              </profile>
+            </profiles>
+            <servers>
+              <server>
+                <id>github</id>
+                <username>token</username>
+                <password>${env.ENV_TOKEN}</password>
+              </server>
+            </servers>
+          </settings>' > ${{ env.SETTINGS_FILE }}
+
+      - name: Add pom.xml with dependency
+        run: |
+          cat > pom.xml << EOM
+          <?xml version="1.0" encoding="UTF-8"?>
+          <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+            <properties>
+              <maven.compiler.source>17</maven.compiler.source>
+              <maven.compiler.target>17</maven.compiler.target>
+            </properties>
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>${{ env.CONSUMER_GROUP_ID }}</groupId>
+            <artifactId>${{ env.CONSUMER_ARTIFACT_ID }}</artifactId>
+            <version>${{ env.CONSUMER_VERSION }}</version>
+            <dependencies>
+              <dependency>
+                <groupId>${{ env.PACKAGE_GROUP_ID }}</groupId>
+                <artifactId>${{ env.PACKAGE_NAME}}</artifactId>
+                <version>${{ env.PACKAGE_VERSION }}</version>
+              </dependency>    
+            </dependencies>
+            <repositories>
+              <repository>
+                <id>github</id>
+                <url>${{ env.MAVEN_REGISTRY_URL }}/${{ github.repository }}</url>
+              </repository>
+            </repositories>
+          </project>
+          EOM
+
+      - name: Add ${{ env.CONSUMER_CLASS_NAME }}.java file
+        run: |
+          SOURCE_PATH=src/main/java/$(echo ${{ env.CONSUMER_GROUP_ID }} | tr . /)
+          mkdir -p $SOURCE_PATH
+          cat <<- END > $SOURCE_PATH/${{ env.CONSUMER_CLASS_NAME }}.java
+          package ${{ env.CONSUMER_GROUP_ID }};
+
+          import ${{ env.PACKAGE_GROUP_ID }}.${{ env.CONSUMEE_CLASS_NAME }};
+
+          public class ${{ env.CONSUMER_CLASS_NAME }}
+          {
+              public static void main( String[] args )
+              {
+                  ${{ env.CONSUMEE_CLASS_NAME }}.main( new String[0] );
+              }
+          }
+          END
+
+      - name: Purge local repo and download dependencies
+        run: mvn dependency:purge-local-repository -DactTransitively=false -DreResolve=false -Dverbose=true
+        env:
+          ENV_TOKEN: ${{ env.TOKEN }}
+
+      - name: Build packages
+        run: mvn clean install -U --settings ${{ env.SETTINGS_FILE }}
+        env:
+          ENV_TOKEN: ${{ env.TOKEN }}
+
+      - name: Exec package
+        run: mvn exec:java -D exec.mainClass=${{ env.CONSUMER_GROUP_ID }}.${{ env.CONSUMER_CLASS_NAME }}

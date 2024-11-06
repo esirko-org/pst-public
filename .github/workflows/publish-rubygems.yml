@@ -1,0 +1,130 @@
+name: publish rubygems
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      token_type:
+        description: 'Token type'
+        default: 'secrets.GITHUB_TOKEN'
+        type: choice
+        options:
+          - secrets.GITHUB_TOKEN
+          - PAT
+          - GitHub App
+      package_name:
+        description: 'Package name, REPO is a macro'
+        default: REPO-1
+        type: string
+      version:
+        description: 'Version number for package. RUN is a macro for github.run_number'
+        default: '1.0.0'
+        type: string
+
+jobs:
+  publish-rubygems:
+    runs-on: ubuntu-latest
+
+    permissions:
+      packages: write
+      contents: read
+
+    steps:
+      - name: Clean
+        run: rm -fr * .* || true
+
+      - uses: actions/checkout@v4
+
+      - name: Set environment vars based on workflow inputs
+        run: |
+          token_type="${{ github.event.client_payload.token_type }}"
+          if [ -z "$token_type" ]; then token_type="${{ inputs.token_type }}"; fi
+          package_name="${{ github.event.client_payload.package_name }}"
+          if [ -z "$package_name" ]; then package_name="${{ inputs.package_name }}"; fi
+          version="${{ github.event.client_payload.version }}"
+          if [ -z "$version" ]; then version="${{ inputs.version }}"; fi
+
+          echo "token_type: $token_type"
+          echo "package_name: $package_name"
+          echo "version: $version"
+          if [[ "$token_type" == "PAT" ]]; then
+            echo "Setting env.TOKEN = secrets.PAT"
+            echo "TOKEN=${{ secrets.PAT }}" >> $GITHUB_ENV
+          elif [[ "$token_type" == "GitHub App" ]]; then
+            echo "Setting env.TOKEN = GitHub App"
+            echo "TOKEN=$(./get-github-app-token ${{ github.repository_owner }})" >> $GITHUB_ENV
+          else
+            echo "Setting env.TOKEN = secrets.GITHUB_TOKEN"
+            echo "TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+          fi
+          cat config | while read line; do if [[ ${line:0:1} != "#" ]]; then echo "$line" >> $GITHUB_ENV; fi; done
+          echo "HOSTNAME=$(echo "${{ github.server_url }}" | sed -E 's/^\s*.*:\/\///g')" >> $GITHUB_ENV  # Strip out "https://"
+          echo "TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%S.%3N)" >> $GITHUB_ENV
+
+          expanded_package_name=$(sed 's/REPO/${{ github.event.repository.name }}/' <<< "$package_name")
+          echo "PACKAGE_NAME=$expanded_package_name" >> $GITHUB_ENV
+
+          expanded_version=$(sed 's/RUN/${{ github.run_number }}/' <<< "$version")
+          echo "VERSION=$expanded_version" >> $GITHUB_ENV
+
+      - name: Output environment variables, etc.
+        run: |
+          echo "github.repository_owner: ${{ github.repository_owner }}"
+          echo "github.repository: ${{ github.repository}}"
+          echo "github.event.repository.name: ${{ github.event.repository.name}}"
+          echo "TIMESTAMP: ${{ env.TIMESTAMP}}"
+          echo "PACKAGE_NAME: ${{ env.PACKAGE_NAME }}"
+          echo "VERSION: ${{ env.VERSION }}"
+          echo "TOKEN: ${{ env.TOKEN }}"
+          echo "HOSTNAME: ${{ env.HOSTNAME}}"
+          echo "RUBYGEMS_REGISTRY_URL: ${{ env.RUBYGEMS_REGISTRY_URL }}"
+
+      - name: Setup Ruby 3.2.2
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.2.2
+
+      - name: Show gem version
+        run: gem -v
+
+      - name: Add lib/${{ env.PACKAGE_NAME }}.rb
+        run: |
+          pwd
+          rm -fr * .* || true
+          # rm -f *.gem *.gemspec
+          # if [ -d lib ]; then rm -fr lib; fi
+          mkdir lib
+          cat > lib/${{ env.PACKAGE_NAME }}.rb << EOM
+          class RubyGemsPublish
+            def self.hello
+              puts "Hello from ${{ github.repository }}! Package [${{ github.repository_owner }}/${{ env.PACKAGE_NAME }}] Version ${{ env.VERSION }} Created at ${{ env.TIMESTAMP }}"
+            end
+          end
+          EOM
+
+      - name: Add ${{ env.PACKAGE_NAME }}.gemspec
+        run: |
+          cat > ${{ env.PACKAGE_NAME }}.gemspec << EOM
+          Gem::Specification.new do |s|
+              s.name        = '${{ env.PACKAGE_NAME }}'
+              s.version     = '${{ env.VERSION }}'
+              s.files       = ["lib/${{ env.PACKAGE_NAME }}.rb"]
+              s.metadata    = {
+                  "github_repo" => "https://github.com/${{ github.repository }}"
+              }
+              s.summary     = "This is a summary!"
+              s.authors     = ["Jamie Cansdale"]
+              s.licenses    = ['MIT']
+              s.homepage    = 'https://github.com/${{ github.repository }}'
+          end
+          EOM
+        env:
+          VERSION: "${{ env.VERSION }}"
+          
+      - name: Build .gem
+        run: gem build *.gemspec
+        
+      - name: Publish .gem
+        run: gem push --host ${{ env.RUBYGEMS_REGISTRY_URL }}/${{ github.repository_owner }} *.gem
+        env:
+          GEM_HOST_API_KEY: "Bearer ${{ env.TOKEN }}"

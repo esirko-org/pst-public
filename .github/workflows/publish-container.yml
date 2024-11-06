@@ -1,0 +1,109 @@
+name: publish container
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      token_type:
+        description: 'Token type'
+        default: 'secrets.GITHUB_TOKEN'
+        type: choice
+        options:
+          - secrets.GITHUB_TOKEN
+          - PAT
+          - GitHub App
+      package_name:
+        description: Package name, REPO is a macro
+        default: REPO-1
+        type: string
+      container_tag:
+        description: 'Container tag'
+        default: 'latest'
+        type: string
+
+env:
+  NAME: ${{ github.event.repository.name }}
+
+jobs:
+  publish-container:
+    runs-on: ubuntu-latest
+
+    permissions:
+      packages: write
+      contents: read
+
+    steps:
+      - name: Clean
+        run: rm -fr * .* || true
+
+      - uses: actions/checkout@v4
+
+      - name: Set environment vars based on workflow inputs
+        run: |
+          token_type="${{ github.event.client_payload.token_type }}"
+          if [ -z "$token_type" ]; then token_type="${{ inputs.token_type }}"; fi
+          package_name="${{ github.event.client_payload.package_name }}"
+          if [ -z "$package_name" ]; then package_name="${{ inputs.package_name }}"; fi
+          container_tag="${{ github.event.client_payload.container_tag }}"
+          if [ -z "$container_tag" ]; then container_tag="${{ inputs.container_tag }}"; fi
+
+          echo "token_type: $token_type"
+          echo "package_name: $package_name"
+          echo "container_tag: $container_tag"
+          if [[ "$token_type" == "PAT" ]]; then
+            echo "Setting env.TOKEN = secrets.PAT"
+            echo "TOKEN=${{ secrets.PAT }}" >> $GITHUB_ENV
+          elif [[ "$token_type" == "GitHub App" ]]; then
+            echo "Setting env.TOKEN = GitHub App"
+            echo "TOKEN=$(./get-github-app-token ${{ github.repository_owner }})" >> $GITHUB_ENV
+          else
+            echo "Setting env.TOKEN = secrets.GITHUB_TOKEN"
+            echo "TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+          fi
+          cat config | while read line; do if [[ ${line:0:1} != "#" ]]; then echo "$line" >> $GITHUB_ENV; fi; done
+          echo "TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%S.%3N)" >> $GITHUB_ENV
+          echo "PACKAGE_NAME=$package_name" >> $GITHUB_ENV
+          echo "CONTAINER_TAG=$container_tag" >> $GITHUB_ENV
+
+          expanded_package_name=$(sed 's/REPO/${{ github.event.repository.name }}/' <<< "$package_name")
+          echo "PACKAGE_NAME=$expanded_package_name" >> $GITHUB_ENV
+
+      - name: Output environment variables, etc.
+        run: |
+          echo "github.repository_owner: ${{ github.repository_owner }}"
+          echo "github.repository: ${{ github.repository}}"
+          echo "github.event.repository.name: ${{ github.event.repository.name}}"
+          echo "TIMESTAMP: ${{ env.TIMESTAMP}}"
+          echo "PACKAGE_NAME: ${{ env.PACKAGE_NAME }}"
+          echo "CONTAINER_TAG: ${{ env.CONTAINER_TAG }}"
+          echo "TOKEN: ${{ env.TOKEN }}"
+          echo "CONTAINER_REGISTRY_URL: ${{ env.CONTAINER_REGISTRY_URL }}"
+
+          container_registry_url_without_protocol=$(echo ${{ env.CONTAINER_REGISTRY_URL }} | sed -E 's/^\s*.*:\/\///g')
+          echo "CONTAINER_REGISTRY_URL_WITHOUT_PROTOCOL=$container_registry_url_without_protocol" >> $GITHUB_ENV
+          echo "CONTAINER_REGISTRY_URL_WITHOUT_PROTOCOL: $container_registry_url_without_protocol"
+
+          image="$container_registry_url_without_protocol/${{ github.repository_owner }}/${{ env.PACKAGE_NAME }}:${{ env.CONTAINER_TAG }}"
+          echo "IMAGE=$image" >> $GITHUB_ENV
+          echo "IMAGE: $image"
+
+      - name: Clean old docker images on runner
+        if: env.CONTAINER_REGISTRY_URL != 'https://ghcr.io' # TODO: there must be a better way to tell if we're on prod or a dev codespace 
+        run: |
+          docker images | grep ${{ env.CONTAINER_REGISTRY_URL_WITHOUT_PROTOCOL }} || true
+          docker image rm -f $(docker images | grep ${{ env.CONTAINER_REGISTRY_URL_WITHOUT_PROTOCOL }} | awk '{ print $1 }') || true
+
+      - name: Create a Dockerfile
+        run: |
+          echo 'FROM alpine' > Dockerfile
+          echo 'ENTRYPOINT ["echo", "Hello from ${{ github.repository }}! Package [${{ github.repository_owner }}/${{ env.PACKAGE_NAME }}] Tag ${{ env.CONTAINER_TAG }} Created at ${{ env.TIMESTAMP }}"]' >> Dockerfile
+          echo 'LABEL org.opencontainers.image.description "This image was built from commit ${{ github.sha }}"' >> Dockerfile
+
+      - name: Build image
+        run: docker build . -t ${IMAGE,,} # lowercase IMAGE
+
+      - name: Login to container registry
+        run: docker login ${{ env.CONTAINER_REGISTRY_URL }} -u token --password-stdin <<< ${{ env.TOKEN }}
+
+      - name: Publish image
+        run: docker push ${IMAGE,,} # lowercase IMAGE
